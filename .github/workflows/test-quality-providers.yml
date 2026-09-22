@@ -1,0 +1,39 @@
+name: Test Quality Providers
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      environment-manager:
+        description: Local tooling provider used by the repository.
+        required: false
+        default: "system"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: quality (system)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup mise
+        if: (github.event_name == 'workflow_dispatch' && inputs['environment-manager'] || 'system') == 'mise'
+        uses: ./.github/actions/setup-lint-mise
+
+      - name: Setup system tools
+        if: (github.event_name == 'workflow_dispatch' && inputs['environment-manager'] || 'system') == 'system'
+        uses: ./.github/actions/setup-lint-system
+
+      - name: Run quality checks
+        env:
+          ENV_MANAGER: ${{ github.event_name == 'workflow_dispatch' && inputs['environment-manager'] || 'system' }}
+          LINT_MODE: check
+        shell: bash
+        run: make quality

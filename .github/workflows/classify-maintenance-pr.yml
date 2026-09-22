@@ -1,0 +1,95 @@
+name: Classify Maintenance Pull Request
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  classify:
+    name: Classify trusted automation PR
+    if: github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-24.04
+    environment: e2e
+    env:
+      MAINTENANCE_IDENTITY_MODE: e2e-disposable
+      MAINTENANCE_FIXTURE_LOGIN: aydabd
+      MAINTENANCE_COPILOT_REVIEWER_LOGIN: copilot-pull-request-reviewer[bot]
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Check out validation helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        env:
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts/validate-maintenance-pr.sh
+
+      - name: Create Bootstrap Writer App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.BOOTSTRAP_E2E_WRITER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOOTSTRAP_E2E_WRITER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Verify Writer App installation
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          EXPECTED_APP_SLUG: ${{ vars.BOOTSTRAP_E2E_WRITER_APP_SLUG }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "$APP_SLUG" ] || {
+            echo "Writer App slug was not resolved" >&2
+            exit 1
+          }
+          [ -n "$EXPECTED_APP_SLUG" ] || {
+            echo "Expected Writer App slug is not configured" >&2
+            exit 1
+          }
+          [ "$APP_SLUG" = "$EXPECTED_APP_SLUG" ] || {
+            echo "Resolved App '$APP_SLUG' is not the configured Writer '$EXPECTED_APP_SLUG'" >&2
+            exit 1
+          }
+
+      - name: Classify and label trusted automation PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          FULL_REPOSITORY: ${{ github.repository }}
+          WRITER_APP_SLUG: ${{ vars.BOOTSTRAP_E2E_WRITER_APP_SLUG }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr_file="$RUNNER_TEMP/pull-request.json"
+          gh api "/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > "$pr_file"
+          if ! classification="$(bash .github/scripts/validate-maintenance-pr.sh "$pr_file")"; then
+            echo "Pull request is not an eligible maintenance automation PR; skipping classification."
+            exit 0
+          fi
+
+          labels=("automation: maintenance" "automation: validating")
+          if [ "$classification" = "dependabot" ]; then
+            labels+=(dependencies)
+          fi
+
+          label_args=()
+          for label in "${labels[@]}"; do
+            label_args+=(-f "labels[]=$label")
+          done
+          gh api --method POST "/repos/$FULL_REPOSITORY/issues/$PR_NUMBER/labels" \
+            "${label_args[@]}" > /dev/null

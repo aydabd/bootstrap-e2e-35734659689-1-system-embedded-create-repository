@@ -1,0 +1,62 @@
+name: Quality
+
+on:
+  workflow_call:
+    inputs:
+      capabilities:
+        description: Comma-separated capabilities selected by the repository profile.
+        required: false
+        default: "lint-markdown,lint-json,lint-yaml,lint-shell,lint-python,lint-terraform,lint-format,lint-tests"
+        type: string
+      environment-manager:
+        description: Local tooling provider used by the repository.
+        required: false
+        default: "system"
+        type: string
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read # Read repository files for quality checks.
+
+jobs:
+  quality:
+    name: quality
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read # Read repository files for quality checks.
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Setup mise tooling
+        if: (github.event_name == 'workflow_call' && inputs['environment-manager'] || 'system') == 'mise'
+        uses: ./.github/actions/setup-lint-mise
+      - name: Setup system tooling
+        if: (github.event_name == 'workflow_call' && inputs['environment-manager'] || 'system') == 'system'
+        uses: ./.github/actions/setup-lint-system
+      - name: Bootstrap quality toolchain
+        shell: bash
+        env:
+          ENVIRONMENT_MANAGER: ${{ github.event_name == 'workflow_call' && inputs['environment-manager'] || 'system' }}
+        run: |
+          set -euo pipefail
+          [ -f Makefile ] || { echo "Generated repository is missing its provider Makefile" >&2; exit 1; }
+          ENV_MANAGER="$ENVIRONMENT_MANAGER" make install
+      - name: Run quality capabilities
+        uses: ./.github/actions/quality/run-quality
+        with:
+          capabilities: >-
+            ${{ github.event_name == 'workflow_call' && inputs.capabilities
+            || 'lint-markdown,lint-json,lint-yaml,lint-shell,lint-python,lint-terraform,lint-format,lint-tests' }}
+          environment-manager: >-
+            ${{ github.event_name == 'workflow_call' && inputs['environment-manager'] || 'system' }}
